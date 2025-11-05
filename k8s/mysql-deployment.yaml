@@ -1,0 +1,166 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: mlops
+data:
+  MYSQL_ROOT_PASSWORD: rootpassword
+  MYSQL_DATABASE: mlops_db
+  MYSQL_USER: mlops_user
+  MYSQL_PASSWORD: mlops_password
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: mlops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: hostpath
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: mlops
+  labels:
+    app: mysql
+    component: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+        component: database
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - configMapRef:
+            name: mysql-config
+        volumeMounts:
+        - name: mysql-storage
+          mountPath: /var/lib/mysql
+        - name: mysql-init
+          mountPath: /docker-entrypoint-initdb.d
+        livenessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -h
+            - localhost
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -h
+            - localhost
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: mysql-storage
+        persistentVolumeClaim:
+          claimName: mysql-pvc
+      - name: mysql-init
+        configMap:
+          name: mysql-init-script
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: mlops
+  labels:
+    app: mysql
+    component: database
+spec:
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    targetPort: 3306
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init-script
+  namespace: mlops
+data:
+  init.sql: |
+    -- Script d'initialisation de la base de données MLOps
+    USE mlops_db;
+
+    -- Table pour stocker les métadonnées des images
+    CREATE TABLE IF NOT EXISTS plants_data (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        url_source VARCHAR(500) NOT NULL COMMENT 'URL source de l\'image sur GitHub',
+        url_s3 VARCHAR(500) COMMENT 'URL de l\'image stockée dans S3/Minio',
+        label ENUM('dandelion', 'grass') NOT NULL COMMENT 'Label de classification',
+        filename VARCHAR(100) NOT NULL COMMENT 'Nom du fichier image',
+        file_size INT COMMENT 'Taille du fichier en bytes',
+        image_width INT COMMENT 'Largeur de l\'image en pixels',
+        image_height INT COMMENT 'Hauteur de l\'image en pixels',
+        download_status ENUM('pending', 'downloaded', 'failed') DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        INDEX idx_label (label),
+        INDEX idx_download_status (download_status),
+        INDEX idx_created_at (created_at),
+        UNIQUE KEY unique_source_url (url_source)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    -- Table pour tracker les prédictions API
+    CREATE TABLE IF NOT EXISTS api_predictions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        request_id VARCHAR(100) NOT NULL,
+        model_name VARCHAR(100),
+        model_version VARCHAR(50),
+        predicted_class VARCHAR(50),
+        confidence_score FLOAT,
+        prediction_time_ms INT,
+        response_status INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        
+        INDEX idx_request_id (request_id),
+        INDEX idx_model_name (model_name),
+        INDEX idx_predicted_class (predicted_class),
+        INDEX idx_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    -- Créer un utilisateur pour l'application
+    CREATE USER IF NOT EXISTS 'mlops_app'@'%' IDENTIFIED BY 'mlops_app_password';
+    GRANT SELECT, INSERT, UPDATE, DELETE ON mlops_db.* TO 'mlops_app'@'%';
+
+    -- Créer un utilisateur en lecture seule
+    CREATE USER IF NOT EXISTS 'mlops_readonly'@'%' IDENTIFIED BY 'mlops_readonly_password';
+    GRANT SELECT ON mlops_db.* TO 'mlops_readonly'@'%';
+
+    FLUSH PRIVILEGES;

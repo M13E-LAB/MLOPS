@@ -1,0 +1,95 @@
+# Configuration Prometheus pour le monitoring MLOps
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Règles d'alerting
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+# Configuration des alertes
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Configuration des jobs de scraping
+scrape_configs:
+  # Monitoring de Prometheus lui-même
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Monitoring des services Docker
+  - job_name: 'docker-containers'
+    static_configs:
+      - targets: 
+        - 'mysql:3306'
+        - 'minio:9000'
+        - 'mlflow:5000'
+        - 'airflow-webserver:8080'
+        - 'redis:6379'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Monitoring de l'API MLOps (à ajouter plus tard)
+  - job_name: 'mlops-api'
+    static_configs:
+      - targets: ['mlops-api:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # Monitoring de l'application Streamlit (à ajouter plus tard)
+  - job_name: 'mlops-webapp'
+    static_configs:
+      - targets: ['mlops-webapp:8501']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Monitoring des métriques système (si node_exporter est déployé)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 15s
+
+  # Monitoring des métriques Kubernetes (pour la production)
+  - job_name: 'kubernetes-apiservers'
+    kubernetes_sd_configs:
+    - role: endpoints
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: default;kubernetes;https
+
+  # Monitoring des pods Kubernetes
+  - job_name: 'kubernetes-pods'
+    kubernetes_sd_configs:
+    - role: pod
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+      action: keep
+      regex: true
+    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+      action: replace
+      target_label: __metrics_path__
+      regex: (.+)
+    - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+      action: replace
+      regex: ([^:]+)(?::\d+)?;(\d+)
+      replacement: $1:$2
+      target_label: __address__
+    - action: labelmap
+      regex: __meta_kubernetes_pod_label_(.+)
+    - source_labels: [__meta_kubernetes_namespace]
+      action: replace
+      target_label: kubernetes_namespace
+    - source_labels: [__meta_kubernetes_pod_name]
+      action: replace
+      target_label: kubernetes_pod_name
